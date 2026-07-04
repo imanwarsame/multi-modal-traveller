@@ -118,23 +118,55 @@ async function categorySearch(
   }));
 }
 
-const HUB_CATEGORIES: [string, HubKind][] = [
-  ['railway_station', 'rail'],
-  ['metro_station', 'metro'],
-  ['bus_station', 'bus'],
-];
+/**
+ * Mapbox's canonical category IDs aren't guaranteed stable across regions or
+ * API revisions (e.g. Underground stations may sit under `subway` in one place
+ * and `light_rail` in another). We try every plausible slug per kind and merge
+ * whatever comes back — unknown slugs just 4xx and are dropped — so a single
+ * renamed category can't silently kill a whole travel mode.
+ */
+const HUB_CATEGORY_CANDIDATES: Record<HubKind, string[]> = {
+  rail: ['train_station', 'railway_station'],
+  metro: ['subway_station', 'metro_station', 'subway', 'light_rail_station', 'light_rail', 'tram_stop'],
+  bus: ['bus_station', 'bus_stop'],
+};
+
+const PARKING_CANDIDATES = ['parking_lot', 'parking', 'parking_garage'];
+
+/** Deduplicate places that resolve to essentially the same point (~15 m). */
+function dedupeByLocation<T extends Place>(places: T[]): T[] {
+  const seen = new Set<string>();
+  return places.filter((p) => {
+    const key = `${p.coord[0].toFixed(4)},${p.coord[1].toFixed(4)}`;
+    return !seen.has(key) && seen.add(key);
+  });
+}
+
+/** Run several candidate category searches and merge their results. */
+async function multiCategorySearch(
+  candidates: string[],
+  near: LngLat,
+  limit: number,
+): Promise<Place[]> {
+  const results = await Promise.allSettled(
+    candidates.map((category) => categorySearch(category, near, limit)),
+  );
+  return dedupeByLocation(
+    results.flatMap((r) => (r.status === 'fulfilled' ? r.value : [])),
+  );
+}
 
 /** Find transit hubs of the given kinds around a point. Categories that fail are skipped. */
 export async function findTransitHubs(near: LngLat, kinds: HubKind[]): Promise<TransitHub[]> {
   const results = await Promise.allSettled(
-    HUB_CATEGORIES.filter(([, kind]) => kinds.includes(kind)).map(async ([category, kind]) => {
-      const places = await categorySearch(category, near, 4);
-      return places.map((p): TransitHub => ({ ...p, kind }));
+    kinds.map(async (kind): Promise<TransitHub[]> => {
+      const places = await multiCategorySearch(HUB_CATEGORY_CANDIDATES[kind], near, 6);
+      return places.map((p) => ({ ...p, kind }));
     }),
   );
   return results.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
 }
 
 export async function findParking(near: LngLat): Promise<Place[]> {
-  return categorySearch('parking_lot', near, 6);
+  return multiCategorySearch(PARKING_CANDIDATES, near, 6);
 }
