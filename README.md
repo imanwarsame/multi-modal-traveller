@@ -1,14 +1,21 @@
 # 🧭 Waypoint — multi-modal travel planner
 
-Plan door-to-door trips that mix the vehicles you actually own with public
-transport. Tell Waypoint you have a bike or a car, and it works out options like:
+Plan door-to-door trips across every mode — walking, cycling, driving, bus,
+tube/metro, and train are all considered by default, and you tap to exclude any
+you don't want to use. Waypoint works out options like:
 
 - 🚲 **Cycle → 🚆 Train → 🚶 Walk** — ride to the best boarding station, take
   the train, walk the last stretch
+- 🚗 **Drive & ride** — for long trips (say Southampton → central London),
+  drive most of the way, park at a station on the approach side of the
+  destination (a west-London tube stop), and ride transit into the centre
 - 🚗 **Drive → 🅿️ Park → 🚶 Walk** — where to drive and park to reach a busy
   destination
-- 🚗 **Park & ride** — drive to a suburban station, park there, ride in
+- 🚗 **Park & ride** — drive to a nearby suburban station, park there, ride in
 - Direct cycling, driving, or walking when that wins
+
+Address search uses Mapbox's interactive Search Box API, so fuzzy queries,
+city names, landmarks, and POIs all resolve — you don't need an exact address.
 
 Each option shows total time, estimated cost, and a leg-by-leg breakdown, ranked
 by **fastest** or **cheapest** — your choice. Routes are drawn on a Mapbox map
@@ -43,22 +50,29 @@ Everything runs client-side against Mapbox APIs:
 
 | Concern | API |
 | --- | --- |
-| Address search / autocomplete | Mapbox Geocoding v5 |
+| Address search / autocomplete | Mapbox Search Box suggest + retrieve |
 | Walking / cycling / driving legs | Mapbox Directions v5 |
 | Finding stations, metro stops, bus stations, car parks | Mapbox Search Box category search |
 | Map rendering | Mapbox GL JS v3 |
 
-The planner (`src/lib/planner.ts`) builds candidate itineraries in parallel:
+The planner (`src/lib/planner.ts`) builds candidate itineraries in parallel,
+restricted to the modes you've left enabled (short connecting walks are always
+allowed):
 
-1. **Direct options** for each mode you own (walking only offered under 3 km,
+1. **Direct options** per enabled mode (walking only offered under 3 km,
    cycling under 30 km).
-2. **Transit combinations** — it finds transit hubs within ~6 km of both the
-   origin and destination, then picks the same-kind hub pair that covers the
-   largest share of the trip with the least access distance
-   (`pickHubPair`). Access is by bike if you have one (with a walk-based
+2. **Transit combinations** — it finds hubs of the enabled transit kinds
+   within ~6 km of both the origin and destination, then picks the same-kind
+   hub pair that covers the largest share of the trip with the least access
+   distance (`pickHubPair`). Access is by bike if enabled (with a walk-based
    variant too, since bikes aren't always allowed aboard).
 3. **Car combinations** — drive to the car park closest to the destination and
    walk in, or drive to an origin-side rail/metro station (park & ride).
+4. **Drive & ride** (trips over 15 km) — probe for rail/metro stations at a
+   standoff point on the approach side of the destination, then pick the
+   board/alight pair minimising rough drive + ride + walk time
+   (`pickApproachPair`). This is what suggests "park at a west-London tube
+   station and take the tube in" for Southampton → London.
 
 Failed candidates (no hub nearby, no route) are dropped silently; whatever
 remains is deduplicated and ranked.
