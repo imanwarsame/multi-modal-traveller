@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { geocode, type GeocodeResult } from '../lib/mapboxApi';
+import { retrieve, suggest, type Suggestion } from '../lib/mapboxApi';
 import type { LngLat, Place } from '../types';
 
 interface Props {
@@ -13,11 +13,14 @@ interface Props {
 
 export function PlaceInput({ label, placeholder, value, onChange, proximity, allowMyLocation }: Props) {
   const [text, setText] = useState(value?.name ?? '');
-  const [suggestions, setSuggestions] = useState<GeocodeResult[]>([]);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [open, setOpen] = useState(false);
   const [locating, setLocating] = useState(false);
   const debounce = useRef<number>();
   const wrapper = useRef<HTMLDivElement>(null);
+  // Search Box API groups keystrokes + the final retrieve into one billed
+  // session; start a fresh session after each successful pick.
+  const session = useRef<string>(crypto.randomUUID());
 
   useEffect(() => {
     setText(value?.name ?? '');
@@ -35,14 +38,14 @@ export function PlaceInput({ label, placeholder, value, onChange, proximity, all
     setText(next);
     onChange(null);
     window.clearTimeout(debounce.current);
-    if (next.trim().length < 3) {
+    if (next.trim().length < 2) {
       setSuggestions([]);
       setOpen(false);
       return;
     }
     debounce.current = window.setTimeout(async () => {
       try {
-        const results = await geocode(next, proximity);
+        const results = await suggest(next, session.current, proximity);
         setSuggestions(results);
         setOpen(true);
       } catch {
@@ -51,10 +54,16 @@ export function PlaceInput({ label, placeholder, value, onChange, proximity, all
     }, 300);
   }
 
-  function pick(s: GeocodeResult) {
-    onChange({ name: s.name, coord: s.coord });
+  async function pick(s: Suggestion) {
     setText(s.name);
     setOpen(false);
+    try {
+      const place = await retrieve(s.id, session.current);
+      session.current = crypto.randomUUID();
+      onChange(place);
+    } catch {
+      setText('');
+    }
   }
 
   function useMyLocation() {
@@ -99,7 +108,7 @@ export function PlaceInput({ label, placeholder, value, onChange, proximity, all
         <ul className="suggestions">
           {suggestions.map((s) => (
             <li key={s.id}>
-              <button type="button" onClick={() => pick(s)}>
+              <button type="button" onClick={() => void pick(s)}>
                 <strong>{s.name}</strong>
                 <small>{s.context}</small>
               </button>

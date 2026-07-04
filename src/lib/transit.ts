@@ -1,4 +1,4 @@
-import { COST, TRANSIT_ROUTE_FACTOR, TRANSIT_SPEED_KMH, TRANSIT_WAIT_S } from '../config';
+import { COST, INTERCITY_RAIL, TRANSIT_ROUTE_FACTOR, TRANSIT_SPEED_KMH, TRANSIT_WAIT_S } from '../config';
 import type { Leg, TransitHub } from '../types';
 import { haversineM } from './geo';
 
@@ -13,7 +13,11 @@ import { haversineM } from './geo';
 export function estimateTransitLeg(from: TransitHub, to: TransitHub): Leg {
   const kind = from.kind;
   const distanceM = haversineM(from.coord, to.coord) * TRANSIT_ROUTE_FACTOR;
-  const inVehicleS = (distanceM / 1000 / TRANSIT_SPEED_KMH[kind]) * 3600;
+  const speedKmh =
+    kind === 'rail' && distanceM > INTERCITY_RAIL.minDistanceM
+      ? INTERCITY_RAIL.speedKmh
+      : TRANSIT_SPEED_KMH[kind];
+  const inVehicleS = (distanceM / 1000 / speedKmh) * 3600;
   return {
     mode: 'transit',
     transitKind: kind,

@@ -14,6 +14,17 @@ export function haversineM(a: LngLat, b: LngLat): number {
   return 2 * EARTH_RADIUS_M * Math.asin(Math.sqrt(h));
 }
 
+/**
+ * A point `distanceM` metres from `from` in the direction of `toward`.
+ * Planar interpolation — fine at the sub-100 km scale we use it for.
+ */
+export function pointToward(from: LngLat, toward: LngLat, distanceM: number): LngLat {
+  const total = haversineM(from, toward);
+  if (total <= distanceM) return toward;
+  const t = distanceM / total;
+  return [from[0] + (toward[0] - from[0]) * t, from[1] + (toward[1] - from[1]) * t];
+}
+
 export function formatDuration(seconds: number): string {
   const mins = Math.round(seconds / 60);
   if (mins < 60) return `${Math.max(mins, 1)} min`;

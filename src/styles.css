@@ -217,8 +217,20 @@ legend {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
+.mode-toggle:not(.on) {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
 .mode-toggle input {
   display: none;
+}
+
+.modes-hint {
+  width: 100%;
+  margin: 2px 0 0;
+  font-size: 0.75rem;
+  color: var(--muted);
 }
 
 .segmented {

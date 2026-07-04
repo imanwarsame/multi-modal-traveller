@@ -5,14 +5,22 @@ import { PlaceInput } from './components/PlaceInput';
 import { TokenGate } from './components/TokenGate';
 import { getToken } from './lib/mapboxApi';
 import { planItineraries } from './lib/planner';
-import type { Itinerary, Optimize, Place } from './types';
+import type { Itinerary, Optimize, Place, TravelMode } from './types';
+
+const ALL_MODES: { id: TravelMode; icon: string; label: string }[] = [
+  { id: 'walk', icon: '🚶', label: 'Walk' },
+  { id: 'cycle', icon: '🚲', label: 'Bike' },
+  { id: 'drive', icon: '🚗', label: 'Car' },
+  { id: 'bus', icon: '🚌', label: 'Bus' },
+  { id: 'metro', icon: '🚇', label: 'Tube' },
+  { id: 'rail', icon: '🚆', label: 'Train' },
+];
 
 export default function App() {
   const [hasToken, setHasToken] = useState(() => getToken() !== '');
   const [origin, setOrigin] = useState<Place | null>(null);
   const [dest, setDest] = useState<Place | null>(null);
-  const [hasBike, setHasBike] = useState(true);
-  const [hasCar, setHasCar] = useState(false);
+  const [modes, setModes] = useState<Set<TravelMode>>(() => new Set(ALL_MODES.map((m) => m.id)));
   const [optimize, setOptimize] = useState<Optimize>('fastest');
   const [itineraries, setItineraries] = useState<Itinerary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -28,7 +36,7 @@ export default function App() {
     setError(null);
     setItineraries([]);
     try {
-      const results = await planItineraries(origin, dest, { hasBike, hasCar, optimize });
+      const results = await planItineraries(origin, dest, { modes: [...modes], optimize });
       setItineraries(results);
       setSelectedId(results[0]?.id ?? null);
     } catch (e) {
@@ -69,15 +77,23 @@ export default function App() {
         />
 
         <fieldset className="modes">
-          <legend>I have a…</legend>
-          <label className={`mode-toggle${hasBike ? ' on' : ''}`}>
-            <input type="checkbox" checked={hasBike} onChange={(e) => setHasBike(e.target.checked)} />
-            🚲 Bike
-          </label>
-          <label className={`mode-toggle${hasCar ? ' on' : ''}`}>
-            <input type="checkbox" checked={hasCar} onChange={(e) => setHasCar(e.target.checked)} />
-            🚗 Car
-          </label>
+          <legend>Travel modes — tap to exclude any</legend>
+          {ALL_MODES.map((m) => (
+            <label key={m.id} className={`mode-toggle${modes.has(m.id) ? ' on' : ''}`}>
+              <input
+                type="checkbox"
+                checked={modes.has(m.id)}
+                onChange={(e) => {
+                  const next = new Set(modes);
+                  if (e.target.checked) next.add(m.id);
+                  else next.delete(m.id);
+                  setModes(next);
+                }}
+              />
+              {m.icon} {m.label}
+            </label>
+          ))}
+          <p className="modes-hint">Short connecting walks are always included.</p>
         </fieldset>
 
         <fieldset className="optimize">
@@ -97,8 +113,8 @@ export default function App() {
           </div>
         </fieldset>
 
-        <button type="submit" className="plan-btn" disabled={!origin || !dest || loading}>
-          {loading ? 'Planning…' : 'Plan my trip'}
+        <button type="submit" className="plan-btn" disabled={!origin || !dest || modes.size === 0 || loading}>
+          {loading ? 'Planning…' : modes.size === 0 ? 'Enable a travel mode' : 'Plan my trip'}
         </button>
       </form>
 

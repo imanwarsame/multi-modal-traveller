@@ -1,6 +1,15 @@
-import { COST, LIMITS } from '../config';
-import type { Itinerary, Leg, LegMode, Place, PlanOptions, TransitHub } from '../types';
-import { haversineM } from './geo';
+import { COST, DRIVE_ESTIMATE_KMH, LIMITS, TRANSIT_SPEED_KMH } from '../config';
+import type {
+  HubKind,
+  Itinerary,
+  Leg,
+  LegMode,
+  Place,
+  PlanOptions,
+  TransitHub,
+  TravelMode,
+} from '../types';
+import { haversineM, pointToward } from './geo';
 import { directions, findParking, findTransitHubs, type DirectionsProfile } from './mapboxApi';
 import { estimateTransitLeg } from './transit';
 
@@ -18,6 +27,8 @@ const MODE_LABEL: Record<LegMode, string> = {
 };
 
 const TRANSIT_LABEL = { rail: 'Train', metro: 'Metro', bus: 'Bus' } as const;
+
+const TRANSIT_KINDS: HubKind[] = ['rail', 'metro', 'bus'];
 
 const TRANSIT_ESTIMATE_NOTE =
   'Transit time and fare are estimates — check the live timetable before you set off.';
@@ -73,6 +84,34 @@ export function pickHubPair(
         haversineM(origin.coord, board.coord) + haversineM(alight.coord, dest.coord);
       const score = transitM - 2 * accessM;
       if (!best || score > best.score) best = { board, alight, score };
+    }
+  }
+  return best && { board: best.board, alight: best.alight };
+}
+
+/**
+ * Pick where to leave the car on the way in: the (board, alight) pair that
+ * minimises rough drive + ride + walk time. Unlike pickHubPair there is no
+ * minimum-coverage rule — the transit leg only handles the final approach into
+ * the centre, however long the drive before it was.
+ */
+export function pickApproachPair(
+  origin: Place,
+  dest: Place,
+  boardHubs: TransitHub[],
+  alightHubs: TransitHub[],
+): { board: TransitHub; alight: TransitHub } | null {
+  let best: { board: TransitHub; alight: TransitHub; estS: number } | null = null;
+  for (const board of boardHubs) {
+    for (const alight of alightHubs) {
+      if (board.kind !== alight.kind) continue;
+      const transitM = haversineM(board.coord, alight.coord);
+      if (transitM < 1500) continue; // pointless hop
+      const estS =
+        haversineM(origin.coord, board.coord) / (DRIVE_ESTIMATE_KMH / 3.6) +
+        transitM / (TRANSIT_SPEED_KMH[board.kind] / 3.6) +
+        haversineM(alight.coord, dest.coord) / 1.3;
+      if (!best || estS < best.estS) best = { board, alight, estS };
     }
   }
   return best && { board: best.board, alight: best.alight };
@@ -139,6 +178,43 @@ async function parkAndRide(
   ]);
 }
 
+/**
+ * Long-trip pattern: drive most of the way, park at a station on the approach
+ * side of the destination (e.g. a west-London tube station when coming from
+ * Southampton), and ride transit into the centre.
+ */
+async function driveAndRide(
+  origin: Place,
+  dest: Place,
+  destHubs: TransitHub[],
+  kinds: HubKind[],
+): Promise<Itinerary | null> {
+  const directM = haversineM(origin.coord, dest.coord);
+  if (directM < LIMITS.driveAndRideMinM) return null;
+  const rideKinds = kinds.filter((k) => k !== 'bus');
+  const useKinds = rideKinds.length > 0 ? rideKinds : kinds;
+
+  const { fraction, minM, maxM } = LIMITS.approachStandoff;
+  const standoffM = Math.min(Math.max(directM * fraction, minM), maxM);
+  const approach = pointToward(dest.coord, origin.coord, standoffM);
+
+  const boardHubs = (await findTransitHubs(approach, useKinds)).filter(
+    (h) => haversineM(h.coord, dest.coord) > 2500, // stay out of the centre
+  );
+  const alightHubs = nearbyHubs(destHubs, dest).filter((h) => useKinds.includes(h.kind));
+  const pair = pickApproachPair(origin, dest, boardHubs, alightHubs);
+  if (!pair) return null;
+
+  const [drive, walk] = await Promise.all([
+    routedLeg('drive', origin, pair.board, COST.stationParking),
+    routedLeg('walk', pair.alight, dest),
+  ]);
+  return buildItinerary('drive-and-ride', [drive, estimateTransitLeg(pair.board, pair.alight), walk], [
+    TRANSIT_ESTIMATE_NOTE,
+    `Park near ${pair.board.name} and ride in — skips driving into the centre.`,
+  ]);
+}
+
 export function rankItineraries(itineraries: Itinerary[], optimize: PlanOptions['optimize']): Itinerary[] {
   return [...itineraries].sort((a, b) =>
     optimize === 'cheapest'
@@ -152,40 +228,47 @@ export async function planItineraries(
   dest: Place,
   opts: PlanOptions,
 ): Promise<Itinerary[]> {
+  const allowed = new Set<TravelMode>(opts.modes);
+  if (allowed.size === 0) throw new Error('Enable at least one travel mode.');
   const directM = haversineM(origin.coord, dest.coord);
   if (directM < 50) throw new Error('Origin and destination are the same place.');
 
-  const wantMultiModal = directM > LIMITS.multiModalMinM;
-  const [originHubs, destHubs] = wantMultiModal
-    ? await Promise.all([findTransitHubs(origin.coord), findTransitHubs(dest.coord)])
+  const kinds = TRANSIT_KINDS.filter((k) => allowed.has(k));
+  const wantTransit = kinds.length > 0 && directM > LIMITS.multiModalMinM;
+  const [originHubs, destHubs] = wantTransit
+    ? await Promise.all([findTransitHubs(origin.coord, kinds), findTransitHubs(dest.coord, kinds)])
     : [[], []];
 
   const candidates: Promise<Itinerary | null>[] = [];
 
-  if (directM <= LIMITS.walkDirectM) {
+  if (allowed.has('walk') && directM <= LIMITS.walkDirectM) {
     candidates.push(routedLeg('walk', origin, dest).then((l) => buildItinerary('walk', [l])));
   }
-  if (opts.hasBike && directM <= LIMITS.cycleDirectM) {
+  if (allowed.has('cycle') && directM <= LIMITS.cycleDirectM) {
     candidates.push(routedLeg('cycle', origin, dest).then((l) => buildItinerary('cycle', [l])));
   }
-  if (opts.hasCar) {
+  if (allowed.has('drive')) {
     candidates.push(
       routedLeg('drive', origin, dest, COST.parking).then((l) =>
         buildItinerary('drive', [l], ['Includes an estimated parking charge at the destination.']),
       ),
     );
+    if (directM > LIMITS.multiModalMinM) {
+      candidates.push(parkNearDestination(origin, dest));
+    }
   }
-  if (wantMultiModal) {
-    candidates.push(
-      transitItinerary(origin, dest, opts.hasBike ? 'cycle' : 'walk', originHubs, destHubs),
-    );
-    if (opts.hasBike) {
-      // Also offer the walk-based variant: no bike-carriage constraints.
+  if (wantTransit) {
+    if (allowed.has('cycle')) {
+      candidates.push(transitItinerary(origin, dest, 'cycle', originHubs, destHubs));
+    }
+    if (allowed.has('walk') || (!allowed.has('cycle') && !allowed.has('drive'))) {
+      // Walk-access variant: no bike-carriage constraints; also the only way
+      // to reach a station at all when neither cycling nor driving is enabled.
       candidates.push(transitItinerary(origin, dest, 'walk', originHubs, destHubs));
     }
-    if (opts.hasCar) {
-      candidates.push(parkNearDestination(origin, dest));
+    if (allowed.has('drive')) {
       candidates.push(parkAndRide(origin, dest, originHubs, destHubs));
+      candidates.push(driveAndRide(origin, dest, destHubs, kinds));
     }
   }
 
@@ -195,13 +278,14 @@ export async function planItineraries(
     .map((r) => r.value)
     .filter((it): it is Itinerary => it !== null);
 
-  // The same hub pair can produce identical walk-transit itineraries; dedupe by label.
-  const seen = new Set<string>();
-  const unique = itineraries.filter((it) => !seen.has(it.label) && seen.add(it.label));
-
-  if (unique.length === 0) {
+  if (itineraries.length === 0) {
     const failure = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
     throw new Error(failure ? String(failure.reason) : 'No routes found for these options.');
   }
-  return rankItineraries(unique, opts.optimize);
+
+  // Rank first, then dedupe by label so the better of two same-shaped
+  // itineraries (e.g. both "Drive → Train → Walk") is the one that survives.
+  const ranked = rankItineraries(itineraries, opts.optimize);
+  const seen = new Set<string>();
+  return ranked.filter((it) => !seen.has(it.label) && seen.add(it.label));
 }

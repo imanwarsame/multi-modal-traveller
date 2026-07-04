@@ -37,8 +37,11 @@ export interface Itinerary {
 
 export type Optimize = 'fastest' | 'cheapest';
 
+/** Everything the user can travel by. Transit kinds are separate so each can be excluded. */
+export type TravelMode = 'walk' | 'cycle' | 'drive' | 'bus' | 'metro' | 'rail';
+
 export interface PlanOptions {
-  hasBike: boolean;
-  hasCar: boolean;
+  /** Modes the user is willing to use. Short connecting walks are always allowed. */
+  modes: TravelMode[];
   optimize: Optimize;
 }

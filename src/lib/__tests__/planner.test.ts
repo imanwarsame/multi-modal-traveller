@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Itinerary, Place, TransitHub } from '../../types';
-import { pickHubPair, rankItineraries } from '../planner';
+import { haversineM, pointToward } from '../geo';
+import { pickApproachPair, pickHubPair, rankItineraries } from '../planner';
 import { estimateTransitLeg } from '../transit';
 
 const origin: Place = { name: 'Origin', coord: [-0.3, 51.5] };
@@ -37,6 +38,46 @@ describe('pickHubPair', () => {
     const destHubs = [hub('Alight', [-0.01, 51.5])];
     const pair = pickHubPair(origin, dest, originHubs, destHubs);
     expect(pair?.board.name).toBe('Close');
+  });
+});
+
+describe('pointToward', () => {
+  it('lands the requested distance along the way', () => {
+    const p = pointToward([0, 51.5], [-1.4, 50.9], 10_000);
+    expect(haversineM([0, 51.5], p)).toBeCloseTo(10_000, -3);
+  });
+
+  it('clamps to the target when the target is closer than the distance', () => {
+    expect(pointToward([0, 51.5], [0.01, 51.5], 10_000)).toEqual([0.01, 51.5]);
+  });
+});
+
+describe('pickApproachPair', () => {
+  // Southampton → central London: park at a west-London metro hub and ride in.
+  const soton: Place = { name: 'Southampton', coord: [-1.4044, 50.9097] };
+  const london: Place = { name: 'Covent Garden', coord: [-0.1226, 51.5117] };
+
+  it('parks at the approach-side hub, not one beyond the destination', () => {
+    const westHub = hub('West London Metro', [-0.28, 51.49], 'metro');
+    const eastHub = hub('East London Metro', [0.05, 51.51], 'metro'); // past the centre
+    const alight = hub('Central Metro', [-0.125, 51.51], 'metro');
+    const pair = pickApproachPair(soton, london, [westHub, eastHub], [alight]);
+    expect(pair?.board.name).toBe('West London Metro');
+    expect(pair?.alight.name).toBe('Central Metro');
+  });
+
+  it('accepts short transit hops (no minimum-coverage rule)', () => {
+    // 8 km hop vs a 110 km trip would be rejected by pickHubPair.
+    const board = hub('Approach Hub', [-0.24, 51.5], 'metro');
+    const alight = hub('Central Hub', [-0.125, 51.51], 'metro');
+    expect(pickHubPair(soton, london, [board], [alight])).toBeNull();
+    expect(pickApproachPair(soton, london, [board], [alight])).not.toBeNull();
+  });
+
+  it('rejects hops too short to beat just driving there', () => {
+    const board = hub('A', [-0.13, 51.511], 'metro');
+    const alight = hub('B', [-0.125, 51.51], 'metro');
+    expect(pickApproachPair(soton, london, [board], [alight])).toBeNull();
   });
 });
 

@@ -23,29 +23,48 @@ async function fetchJson<T>(url: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export interface GeocodeResult extends Place {
+export interface Suggestion {
   id: string;
+  name: string;
   context: string;
 }
 
-export async function geocode(query: string, proximity?: LngLat): Promise<GeocodeResult[]> {
+/**
+ * Interactive search via the Search Box API: `suggest` matches fuzzy queries,
+ * city names, POIs and landmarks — not just exact addresses. Coordinates come
+ * from a follow-up `retrieve` call using the same session token.
+ */
+export async function suggest(
+  query: string,
+  sessionToken: string,
+  proximity?: LngLat,
+): Promise<Suggestion[]> {
   const params = new URLSearchParams({
+    q: query,
     access_token: getToken(),
-    autocomplete: 'true',
-    limit: '5',
+    session_token: sessionToken,
+    limit: '6',
   });
   if (proximity) params.set('proximity', proximity.join(','));
+  if (navigator.language) params.set('language', navigator.language.split('-')[0]);
   const data = await fetchJson<{
-    features: { id: string; text: string; place_name: string; center: [number, number] }[];
-  }>(
-    `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?${params}`,
-  );
-  return data.features.map((f) => ({
-    id: f.id,
-    name: f.text,
-    context: f.place_name,
-    coord: f.center,
+    suggestions: { mapbox_id: string; name: string; place_formatted?: string }[];
+  }>(`https://api.mapbox.com/search/searchbox/v1/suggest?${params}`);
+  return data.suggestions.map((s) => ({
+    id: s.mapbox_id,
+    name: s.name,
+    context: s.place_formatted ?? '',
   }));
+}
+
+export async function retrieve(id: string, sessionToken: string): Promise<Place> {
+  const params = new URLSearchParams({ access_token: getToken(), session_token: sessionToken });
+  const data = await fetchJson<{
+    features: { geometry: { coordinates: [number, number] }; properties: { name: string } }[];
+  }>(`https://api.mapbox.com/search/searchbox/v1/retrieve/${encodeURIComponent(id)}?${params}`);
+  const f = data.features[0];
+  if (!f) throw new Error('Could not resolve that place.');
+  return { name: f.properties.name, coord: f.geometry.coordinates };
 }
 
 export type DirectionsProfile = 'walking' | 'cycling' | 'driving';
@@ -105,10 +124,10 @@ const HUB_CATEGORIES: [string, HubKind][] = [
   ['bus_station', 'bus'],
 ];
 
-/** Find transit hubs around a point, closest first. Categories that fail are skipped. */
-export async function findTransitHubs(near: LngLat): Promise<TransitHub[]> {
+/** Find transit hubs of the given kinds around a point. Categories that fail are skipped. */
+export async function findTransitHubs(near: LngLat, kinds: HubKind[]): Promise<TransitHub[]> {
   const results = await Promise.allSettled(
-    HUB_CATEGORIES.map(async ([category, kind]) => {
+    HUB_CATEGORIES.filter(([, kind]) => kinds.includes(kind)).map(async ([category, kind]) => {
       const places = await categorySearch(category, near, 4);
       return places.map((p): TransitHub => ({ ...p, kind }));
     }),
